@@ -6,8 +6,9 @@ import traceback
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import ScrollableContainer, Vertical
-from textual.widgets import Footer, Header, Input, TextArea
-from textual_autocomplete import AutoComplete, DropdownItem
+from textual.message import Message
+from textual.widgets import Footer, Header, Markdown, OptionList, TextArea
+from textual.widgets.option_list import Option
 
 from agent.agent import AgentInput, CodingAgent
 
@@ -18,12 +19,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 COMMANDS = [
-    DropdownItem(main="/help", prefix="❓ "),
-    DropdownItem(main="/login", prefix="🔑 "),
-    DropdownItem(main="/logout", prefix="🚪 "),
-    DropdownItem(main="/status", prefix="📊 "),
-    DropdownItem(main="/clear", prefix="🧹 "),
-    DropdownItem(main="/quit", prefix="👋 "),
+    ("/help", "❓ Show help"),
+    ("/login", "🔑 GitHub Copilot login"),
+    ("/logout", "🚪 Clear tokens"),
+    ("/status", "📊 Show login status"),
+    ("/clear", "🧹 Clear chat"),
+    ("/quit", "👋 Quit"),
 ]
 
 COMMANDS_HELP = """Available commands:
@@ -35,13 +36,21 @@ COMMANDS_HELP = """Available commands:
   /quit   - Quit the application"""
 
 
-class MessageOutput(TextArea):
-    """A TextArea for displaying messages."""
+class MessageOutput(Markdown):
+    """A Markdown widget for displaying rendered messages."""
+
+    can_focus = True
 
     DEFAULT_CSS = """
     MessageOutput {
         height: auto;
-        overflow: hidden;
+        margin: 0 0 1 0;
+        padding: 0 1;
+        border-left: blank;
+    }
+
+    MessageOutput:focus {
+        border-left: solid $accent;
     }
     """
 
@@ -49,34 +58,163 @@ class MessageOutput(TextArea):
         Binding("y,c", "copy_to_clipboard", "Copy", show=False),
     ]
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.read_only = True
-        self.language = "markdown"
+    def __init__(self, text: str = "", **kwargs):
+        super().__init__(text, **kwargs)
+        self._raw_text = text
+
+    @property
+    def text(self) -> str:
+        """Get the raw markdown text."""
+        return self._raw_text
+
+    @text.setter
+    def text(self, value: str) -> None:
+        """Set the markdown text and update the rendered output."""
+        self._raw_text = value
+        self.update(value)
 
     def action_copy_to_clipboard(self) -> None:
-        """Copy selected text or all text to clipboard."""
-        text = self.selected_text or self.text
-        if not text:
+        """Copy raw markdown text to clipboard."""
+        if not self._raw_text:
             return
         try:
             import pyperclip
 
-            pyperclip.copy(text)
+            pyperclip.copy(self._raw_text)
         except Exception as e:
             logger.debug("pyperclip failed, falling back to app clipboard: %s", e)
-            self.app.copy_to_clipboard(text)
-        self.app.notify(f"Copied {len(text)} characters")
+            self.app.copy_to_clipboard(self._raw_text)
+        self.app.notify(f"Copied {len(self._raw_text)} characters")
+
+    def on_click(self) -> None:
+        """Focus the message when clicked."""
+        self.focus()
 
 
-class CommandAutoComplete(AutoComplete):
-    """AutoComplete that only shows suggestions for slash commands."""
+class CommandSuggestions(OptionList):
+    """Dropdown for command suggestions."""
 
-    def get_candidates(self, target_state):
-        """Only show command suggestions when input starts with /."""
-        if target_state.text.startswith("/"):
-            return COMMANDS
-        return []
+    DEFAULT_CSS = """
+    CommandSuggestions {
+        height: auto;
+        max-height: 8;
+        display: none;
+        layer: overlay;
+        dock: bottom;
+        margin-bottom: 3;
+        margin-left: 1;
+        margin-right: 1;
+        background: $surface;
+        border: solid $primary;
+    }
+
+    CommandSuggestions.visible {
+        display: block;
+    }
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._refresh_options("")
+
+    def _refresh_options(self, filter_text: str) -> None:
+        """Update options based on filter text."""
+        self.clear_options()
+        filter_lower = filter_text.lower()
+        for cmd, desc in COMMANDS:
+            if cmd.startswith(filter_lower):
+                self.add_option(Option(f"{desc}  {cmd}", id=cmd))
+
+    def filter(self, text: str) -> None:
+        """Filter commands and show/hide dropdown."""
+        if text.startswith("/"):
+            self._refresh_options(text)
+            if self.option_count > 0:
+                self.add_class("visible")
+                self.highlighted = 0
+            else:
+                self.remove_class("visible")
+        else:
+            self.remove_class("visible")
+
+    def hide(self) -> None:
+        """Hide the dropdown."""
+        self.remove_class("visible")
+
+
+class UserInput(TextArea):
+    """A TextArea for user input with command suggestions."""
+
+    DEFAULT_CSS = """
+    UserInput {
+        height: auto;
+        max-height: 10;
+        margin: 0 1;
+    }
+    """
+
+    class Submit(Message):
+        def __init__(self, text: str):
+            self.text = text
+            super().__init__()
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.language = None
+        self._suggestions: CommandSuggestions | None = None
+
+    def on_mount(self) -> None:
+        """Get reference to suggestions widget."""
+        try:
+            self._suggestions = self.app.query_one(CommandSuggestions)
+        except Exception:
+            pass
+
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """Update suggestions when text changes."""
+        if self._suggestions:
+            self._suggestions.filter(self.text)
+
+    async def on_key(self, event) -> None:
+        """Handle key events."""
+        if self._suggestions and self._suggestions.has_class("visible"):
+            if event.key == "down":
+                event.prevent_default()
+                self._suggestions.action_cursor_down()
+                return
+            elif event.key == "up":
+                event.prevent_default()
+                self._suggestions.action_cursor_up()
+                return
+            elif event.key == "tab":
+                event.prevent_default()
+                self._accept_suggestion()
+                return
+            elif event.key == "escape":
+                event.prevent_default()
+                self._suggestions.hide()
+                return
+
+        if event.key == "shift+enter":
+            event.prevent_default()
+            self.insert("\n")
+        elif event.key == "enter":
+            event.prevent_default()
+            if self._suggestions:
+                self._suggestions.hide()
+            self.post_message(self.Submit(self.text))
+
+    def _accept_suggestion(self) -> None:
+        """Accept the currently highlighted suggestion."""
+        if not self._suggestions or self._suggestions.option_count == 0:
+            return
+        highlighted = self._suggestions.highlighted
+        if highlighted is not None:
+            option = self._suggestions.get_option_at_index(highlighted)
+            if option and option.id:
+                self.text = str(option.id)
+                self.move_cursor(self.document.end)
+                self._suggestions.hide()
 
 
 class CodingAgentApp(App):
@@ -84,18 +222,14 @@ class CodingAgentApp(App):
 
     TITLE = "Agent 007"
     CSS = """
-    #user_input {
-        dock: bottom;
-        height: auto;
-        min-height: 3;
-        margin: 0 1;
-    }
-
-    AutoComplete {
-        max-height: 10;
+    #main {
+        layers: base overlay;
     }
     """
-    BINDINGS = [Binding("ctrl+c", "handle_sigint", "Quit", show=False)]
+    BINDINGS = [
+        Binding("ctrl+c", "handle_sigint", "Quit", show=False),
+        Binding("c", "copy_focused", "Copy", show=True),
+    ]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -114,6 +248,12 @@ class CodingAgentApp(App):
             self._last_sigint_time = now
             self.notify("Press Ctrl+C again to quit", severity="warning")
 
+    def action_copy_focused(self) -> None:
+        """Copy the focused message to clipboard."""
+        focused = self.focused
+        if isinstance(focused, MessageOutput):
+            focused.action_copy_to_clipboard()
+
     def _cancel_background_tasks(self) -> None:
         """Cancel all background tasks."""
         self.agent.copilot_auth.cancel()
@@ -125,16 +265,12 @@ class CodingAgentApp(App):
         yield Header(id="header")
         with Vertical(id="main"):
             yield ScrollableContainer(id="chat-container")
-            user_input = Input(
-                placeholder="Enter your prompt (/ for commands)...",
-                id="user_input",
-            )
-            yield user_input
-            yield CommandAutoComplete(target=user_input, candidates=None)
+            yield CommandSuggestions(id="suggestions")
+            yield UserInput(id="user_input")
         yield Footer(id="footer")
 
     def on_mount(self) -> None:
-        self.input_widget = self.query_one("#user_input", Input)
+        self.input_widget = self.query_one("#user_input", UserInput)
         self.chat_container = self.query_one("#chat-container", ScrollableContainer)
         self.input_widget.focus()
         self.agent = CodingAgent()
@@ -146,13 +282,13 @@ class CodingAgentApp(App):
         self.chat_container.scroll_end(animate=False)
         return bubble
 
-    async def on_input_submitted(self, event: Input.Submitted) -> None:
+    async def on_user_input_submit(self, message: UserInput.Submit) -> None:
         """Handle input submission."""
-        user_text = event.value.strip()
+        user_text = message.text.strip()
         if not user_text:
             return
 
-        self.input_widget.value = ""
+        self.input_widget.text = ""
 
         if user_text.startswith("/"):
             await self._handle_command(user_text)
