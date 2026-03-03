@@ -24,7 +24,7 @@ class AppConfig:
         """
         self.provider_name = provider_name
         self.ai_manager = AIManager(provider_name)
-        self.agent = CodingAgent(provider_name=provider_name)
+        self.agent = CodingAgent(provider_name=provider_name or self.ai_manager.provider_name())
 
     def get_authenticator(self):
         """Get the current provider's authenticator."""
@@ -33,3 +33,14 @@ class AppConfig:
     def get_model_manager(self):
         """Get the current provider's model manager."""
         return self.ai_manager.get_model_manager()
+
+    def rebuild_agent(self):
+        """Rebuild the agent with the current provider and model.
+        
+        Call this after switching providers or selecting a new model.
+        """
+        current_model = self.ai_manager.get_current_model()
+        self.agent = CodingAgent(
+            provider_name=self.ai_manager.provider_name(),
+            model_name=current_model
+        )

@@ -18,13 +18,14 @@ class CodingAgent(BaseAgent):
 
     Input = AgentInput
 
-    def __init__(self, provider_name: str | None = None, **kwargs):
+    def __init__(self, provider_name: str | None = None, model_name: str | None = None, **kwargs):
         """Initialize the coding agent.
         
         Args:
             provider_name: Name of the provider (e.g., 'copilot', 'openai').
+            model_name: Name/ID of the model to use. If None, uses provider default.
         """
-        super().__init__(provider_name=provider_name)
+        super().__init__(provider_name=provider_name, model_name=model_name)
         self._kwargs = kwargs
 
     async def chat(self, user_input: str) -> None:

@@ -14,8 +14,15 @@ from .copilot_oauth import COPILOT_HEADERS, get_copilot_base_url
 def build_copilot_model(model_name: str | None = None) -> OpenAIChatModel:
     """Build an OpenAI model client configured for the Copilot API."""
     model_name = model_name or os.getenv("AGENT_MODEL", "gpt-4.1")
-    copilot_token = os.getenv("COPILOT_API_KEY") or "not-set"
-    base_url = get_copilot_base_url(os.getenv("COPILOT_API_KEY"))
+    copilot_token = os.getenv("COPILOT_API_KEY")
+    
+    if not copilot_token:
+        raise ValueError(
+            "You need to authenticate with GitHub first.\n"
+            "Use the /login command to get started."
+        )
+    
+    base_url = get_copilot_base_url(copilot_token)
 
     openai_client = AsyncOpenAI(
         base_url=base_url,

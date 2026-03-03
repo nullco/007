@@ -84,6 +84,7 @@ class CodingAgentApp(App):
         yield SystemCommand("Logout", "Clear authentication tokens", self._cmd_logout)
         yield SystemCommand("Status", "Show login status", self._cmd_status)
         yield SystemCommand("Clear", "Clear chat history", self._cmd_clear)
+        yield SystemCommand("Model", "List or select model", self._cmd_model)
 
     def _cmd_login(self) -> None:
         """Execute login command."""
@@ -112,6 +113,11 @@ class CodingAgentApp(App):
             await self._add_message(result)
         await self.chat_container.remove_children()
 
+    def _cmd_model(self) -> None:
+        """Execute model command."""
+        result = asyncio.ensure_future(self.command_handler.handle_model())
+        asyncio.ensure_future(self._handle_command_result(result))
+
     async def _handle_command_result(self, result_future) -> None:
         """Handle command result from async execution."""
         try:
@@ -134,7 +140,22 @@ class CodingAgentApp(App):
         """Initialize the app after mounting."""
         self.input_widget = self.query_one("#user_input", UserInput)
         self.chat_container = self.query_one("#chat-container", ScrollableContainer)
+        
+        # Check if Copilot tokens are available and show a helpful message if not
+        import os
+        if not os.getenv("COPILOT_API_KEY"):
+            asyncio.ensure_future(self._show_auth_reminder())
+        
         self.input_widget.focus()
+
+    async def _show_auth_reminder(self) -> None:
+        """Show authentication reminder if not logged in."""
+        await asyncio.sleep(0.5)  # Let the UI settle first
+        await self._add_message(
+            "👋 Welcome to Agent 007!\n\n"
+            "To use Copilot, you need to authenticate with GitHub.\n\n"
+            "Type /login to get started, or use /help for more commands."
+        )
 
     def on_descendant_focus(self, event) -> None:
         """Keep focus on the input widget at all times."""
@@ -204,7 +225,7 @@ class CodingAgentApp(App):
         except Exception as e:
             logger.error("Error during agent stream: %s", e)
             logger.debug(traceback.format_exc())
-            bubble.text = f"Error: {e}"
+            bubble.text = f"❌ {e}"
             self.chat_container.scroll_end(animate=False)
 
 

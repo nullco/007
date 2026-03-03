@@ -14,25 +14,27 @@ class BaseAgent:
     provider management and message history.
     """
 
-    def __init__(self, provider_name: str | None = None):
+    def __init__(self, provider_name: str | None = None, model_name: str | None = None):
         """Initialize the agent with an AI provider.
         
         Args:
             provider_name: Name of the provider (e.g., 'copilot', 'openai').
                           If None, uses default provider.
+            model_name: Name/ID of the model to use. If None, uses provider default.
         """
         self.ai_manager = AIManager(provider_name)
+        self.model_name = model_name
         self._message_history = None
         self._agent = None
 
     def _get_agent(self) -> Agent:
         """Get or create the pydantic_ai Agent instance."""
         if self._agent is None:
-            model = self.ai_manager.refresh_if_needed()
+            model = self.ai_manager.refresh_if_needed(self.model_name)
             self._agent = Agent(model=model)
         else:
             # Refresh model if needed and update agent
-            model = self.ai_manager.refresh_if_needed()
+            model = self.ai_manager.refresh_if_needed(self.model_name)
             self._agent.model = model
         return self._agent
 
