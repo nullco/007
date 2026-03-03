@@ -3,8 +3,8 @@
 import os
 from unittest.mock import patch
 
-from ai.auth import CopilotAuthenticator
-from ai.copilot_oauth import CopilotCredentials, DeviceCodeResponse, OAuthError
+from ai.providers.copilot.auth import CopilotAuthenticator
+from ai.providers.copilot.copilot_oauth import CopilotCredentials, DeviceCodeResponse, OAuthError
 
 
 class TestCopilotAuthenticator:
@@ -18,7 +18,7 @@ class TestCopilotAuthenticator:
         auth = CopilotAuthenticator()
         assert auth.get_status() == "Not logged in"
 
-    @patch("ai.auth.copilot_oauth.get_github_username")
+    @patch("ai.providers.copilot.auth.copilot_oauth.get_github_username")
     def test_get_status_logged_in(self, mock_get_username):
         mock_get_username.return_value = "testuser"
         auth = CopilotAuthenticator()
@@ -26,7 +26,7 @@ class TestCopilotAuthenticator:
 
         assert auth.get_status() == "Logged in as: testuser"
 
-    @patch("ai.auth.copilot_oauth.get_github_username")
+    @patch("ai.providers.copilot.auth.copilot_oauth.get_github_username")
     def test_get_status_logged_in_no_username(self, mock_get_username):
         mock_get_username.return_value = None
         auth = CopilotAuthenticator()
@@ -36,7 +36,7 @@ class TestCopilotAuthenticator:
 
 
 class TestStartLogin:
-    @patch("ai.auth.copilot_oauth.start_device_flow")
+    @patch("ai.providers.copilot.auth.copilot_oauth.start_device_flow")
     def test_success(self, mock_start_flow):
         mock_start_flow.return_value = DeviceCodeResponse(
             device_code="dc123",
@@ -54,7 +54,7 @@ class TestStartLogin:
         assert auth._device_code == "dc123"
         assert auth._poll_interval == 5
 
-    @patch("ai.auth.copilot_oauth.start_device_flow")
+    @patch("ai.providers.copilot.auth.copilot_oauth.start_device_flow")
     def test_error(self, mock_start_flow):
         mock_start_flow.side_effect = OAuthError("Test error")
 
@@ -74,10 +74,10 @@ class TestPollForToken:
         assert success is False
         assert "Login not started" in msg
 
-    @patch("ai.auth.copilot_oauth.get_github_username")
-    @patch("ai.auth.copilot_oauth.enable_all_models")
-    @patch("ai.auth.copilot_oauth.exchange_for_copilot_token")
-    @patch("ai.auth.copilot_oauth.poll_for_token")
+    @patch("ai.providers.copilot.auth.copilot_oauth.get_github_username")
+    @patch("ai.providers.copilot.auth.copilot_oauth.enable_all_models")
+    @patch("ai.providers.copilot.auth.copilot_oauth.exchange_for_copilot_token")
+    @patch("ai.providers.copilot.auth.copilot_oauth.poll_for_token")
     def test_success(
         self, mock_poll, mock_exchange, mock_enable, mock_username
     ):
@@ -104,7 +104,7 @@ class TestPollForToken:
         del os.environ["GITHUB_API_KEY"]
         del os.environ["COPILOT_API_KEY"]
 
-    @patch("ai.auth.copilot_oauth.poll_for_token")
+    @patch("ai.providers.copilot.auth.copilot_oauth.poll_for_token")
     def test_cancelled(self, mock_poll):
         mock_poll.side_effect = OAuthError("cancelled")
 
@@ -116,7 +116,7 @@ class TestPollForToken:
         assert success is False
         assert "Cancelled" in msg
 
-    @patch("ai.auth.copilot_oauth.poll_for_token")
+    @patch("ai.providers.copilot.auth.copilot_oauth.poll_for_token")
     def test_error(self, mock_poll):
         mock_poll.side_effect = OAuthError("Some error")
 

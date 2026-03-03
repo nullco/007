@@ -4,7 +4,7 @@ import threading
 
 import pytest
 
-from ai.copilot_oauth import (
+from ai.providers.copilot.copilot_oauth import (
     CopilotCredentials,
     DeviceCodeResponse,
     OAuthError,
