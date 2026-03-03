@@ -3,6 +3,10 @@ import logging
 import os
 import traceback
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 from typing import Iterable
 
 from textual.app import App, ComposeResult, SystemCommand
@@ -82,11 +86,11 @@ class UserInput(TextArea):
         height: auto;
         max-height: 10;
         margin: 0 1;
-        border: none;
+        border: round $primary-muted;
     }
 
     UserInput:focus {
-        border: none;
+        border: round $primary-muted;
     }
     """
 

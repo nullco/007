@@ -78,7 +78,7 @@ class CopilotAuthenticator:
             os.environ["COPILOT_API_KEY"] = creds.copilot_token
             copilot_oauth.enable_all_models(creds.copilot_token)
 
-        if os.getenv("AGENT_PERSIST_TOKENS", "").lower() in ("1", "true", "yes"):
+        if os.getenv("AGENT_PERSIST_TOKENS", "true").lower() not in ("0", "false", "no"):
             self._save_tokens()
 
         username = copilot_oauth.get_github_username(access_token)
@@ -97,7 +97,7 @@ class CopilotAuthenticator:
         if "COPILOT_API_KEY" in os.environ:
             del os.environ["COPILOT_API_KEY"]
 
-        if os.getenv("AGENT_PERSIST_TOKENS", "").lower() in ("1", "true", "yes"):
+        if os.getenv("AGENT_PERSIST_TOKENS", "true").lower() not in ("0", "false", "no"):
             self._remove_tokens_from_env_file()
 
         return "[OAuth] Logged out."

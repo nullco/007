@@ -9,6 +9,7 @@ dependencies = [
     "pydantic-ai",
     "pyperclip>=1.11.0",
     "requests",
+    "python-dotenv",
     "textual-autocomplete>=4.0.6",
 ]
 
