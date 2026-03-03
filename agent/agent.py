@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import os
-
 from pydantic import BaseModel
 from pydantic_ai.agent import Agent
 
-from .auth import CopilotAuthenticator
+from ai.auth import CopilotAuthenticator
+from ai.model import build_copilot_model
 
 
 class AgentInput(BaseModel):
@@ -15,14 +14,20 @@ class AgentInput(BaseModel):
 class CodingAgent(Agent):
     Input = AgentInput
 
-    def __init__(self, model: str | None = None, **kwargs):
-        model = model or os.getenv("AGENT_MODEL", "github:gpt-4.1")
-        super().__init__(model=model, **kwargs)
+    def __init__(self, model=None, **kwargs):
+        self._model_name = model
+        super().__init__(model=build_copilot_model(self._model_name), **kwargs)
         self._message_history = None
         self.copilot_auth = CopilotAuthenticator()
 
+    def refresh_model(self) -> None:
+        """Rebuild the model client with current tokens."""
+        self.model = build_copilot_model(self._model_name)
+
     async def stream(self, user_input: AgentInput, stream_handler):
         """Stream responses from the agent."""
+        if self.copilot_auth.refresh_token():
+            self.refresh_model()
         async with self.run_stream(
             user_input.user_input, message_history=self._message_history
         ) as result:

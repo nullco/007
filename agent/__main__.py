@@ -5,7 +5,6 @@ import traceback
 
 from dotenv import load_dotenv
 
-load_dotenv()
 
 from typing import Iterable
 
@@ -18,6 +17,8 @@ from textual.events import TextSelected
 from textual.widgets import Footer, Header, Markdown, TextArea
 
 from agent.agent import AgentInput, CodingAgent
+
+load_dotenv()
 
 _log_file = os.getenv("AGENT_LOG_FILE")
 logging.basicConfig(
@@ -87,10 +88,12 @@ class UserInput(TextArea):
         max-height: 10;
         margin: 0 1;
         border: round $primary-muted;
+        background: transparent;
     }
 
     UserInput:focus {
         border: round $primary-muted;
+        background: transparent;
     }
     """
 
@@ -237,6 +240,7 @@ class CodingAgentApp(App):
         _, msg = await loop.run_in_executor(
             None, self.agent.copilot_auth.poll_for_token
         )
+        self.agent.refresh_model()
         await self._add_message(msg)
 
     async def _handle_chat(self, user_text: str) -> None:

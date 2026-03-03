@@ -19,6 +19,7 @@ class CopilotAuthenticator:
 
     github_token: str | None = None
     copilot_token: str | None = None
+    copilot_expires_ms: int | None = field(default=None, repr=False)
     _device_code: str | None = field(default=None, repr=False)
     _poll_interval: int = field(default=5, repr=False)
     _cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
@@ -72,11 +73,7 @@ class CopilotAuthenticator:
         self.github_token = access_token
         os.environ["GITHUB_API_KEY"] = access_token
 
-        creds = copilot_oauth.exchange_for_copilot_token(access_token)
-        if creds.copilot_token:
-            self.copilot_token = creds.copilot_token
-            os.environ["COPILOT_API_KEY"] = creds.copilot_token
-            copilot_oauth.enable_all_models(creds.copilot_token)
+        self._apply_copilot_token(access_token)
 
         if os.getenv("AGENT_PERSIST_TOKENS", "true").lower() not in ("0", "false", "no"):
             self._save_tokens()
@@ -85,6 +82,29 @@ class CopilotAuthenticator:
         if username:
             return True, f"[OAuth] Logged in as: {username}"
         return True, "[OAuth] Login successful!"
+
+    def _apply_copilot_token(self, github_token: str) -> None:
+        """Exchange GitHub token for Copilot token and store it."""
+        creds = copilot_oauth.exchange_for_copilot_token(github_token)
+        if creds.copilot_token:
+            self.copilot_token = creds.copilot_token
+            self.copilot_expires_ms = creds.expires_ms
+            os.environ["COPILOT_API_KEY"] = creds.copilot_token
+            copilot_oauth.enable_all_models(creds.copilot_token)
+
+    def is_token_expired(self) -> bool:
+        """Check if the Copilot token has expired."""
+        if not self.copilot_expires_ms:
+            return False
+        import time
+        return int(time.time() * 1000) >= self.copilot_expires_ms
+
+    def refresh_token(self) -> bool:
+        """Refresh the Copilot token if expired. Returns True if refreshed."""
+        if not self.is_token_expired() or not self.github_token:
+            return False
+        self._apply_copilot_token(self.github_token)
+        return self.copilot_token is not None
 
     def logout(self) -> str:
         """Clear tokens and environment variables."""
