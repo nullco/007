@@ -12,8 +12,10 @@ from textual.app import App, ComposeResult, SystemCommand
 from textual.binding import Binding
 from textual.containers import ScrollableContainer, Vertical
 from textual.events import TextSelected
+from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Footer, Header
+from textual.widgets._footer import FooterLabel
 
 from textual.command import CommandPalette
 
@@ -26,6 +28,22 @@ from app.tui.provider_selection import ProviderSelectionScreen
 logger = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
+
+
+class ModelFooter(Footer):
+    """Footer that shows the selected model on the left."""
+
+    model_text = reactive("Model: -")
+
+    def compose(self) -> ComposeResult:
+        yield FooterLabel(self.model_text, id="model-label")
+        yield from super().compose()
+
+    def watch_model_text(self, value: str) -> None:
+        if not self.is_mounted:
+            return
+        label = self.query_one("#model-label", FooterLabel)
+        label.update(value)
 
 
 async def _run_in_daemon_thread(fn: Callable[[], _T]) -> _T:
@@ -156,7 +174,19 @@ class CodingAgentApp(App):
             ai.switch_provider(provider)
         ai.select_model(model_id)
         self.app_config.rebuild_agent()
+        self._update_model_footer()
         self.notify(f"Switched to {model_id} ({provider})")
+
+    def _format_model_label(self) -> str:
+        """Build the model label text for the footer."""
+        provider = self.app_config.ai_manager.provider_name()
+        model = self.app_config.ai_manager.get_current_model() or "default"
+        return f"Model: {model} ({provider})"
+
+    def _update_model_footer(self) -> None:
+        """Update the footer with the currently selected model."""
+        footer = self.query_one("#footer", ModelFooter)
+        footer.model_text = self._format_model_label()
 
     def _cmd_logout(self) -> None:
         """Execute logout command."""
@@ -195,7 +225,7 @@ class CodingAgentApp(App):
         with Vertical(id="main"):
             yield ScrollableContainer(id="chat-container")
             yield UserInput(id="user_input")
-        yield Footer(id="footer")
+        yield ModelFooter(id="footer")
 
     def on_mount(self) -> None:
         """Initialize the app after mounting."""
@@ -206,7 +236,8 @@ class CodingAgentApp(App):
         import os
         if not os.getenv("COPILOT_API_KEY"):
             asyncio.ensure_future(self._show_auth_reminder())
-        
+
+        self._update_model_footer()
         self.input_widget.focus()
 
     async def _show_auth_reminder(self) -> None:

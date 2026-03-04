@@ -25,6 +25,7 @@ class AIManager:
         self._provider = get_provider(self._provider_name)
         self._model = None
         self._auth = None
+        self._model_manager = self._provider.get_model_manager()
 
     def provider(self):
         return self._provider
@@ -45,7 +46,9 @@ class AIManager:
 
     def get_model_manager(self) -> Optional[ModelManager]:
         """Get the current provider's model manager."""
-        return self._provider.get_model_manager()
+        if self._model_manager is None:
+            self._model_manager = self._provider.get_model_manager()
+        return self._model_manager
 
     def switch_provider(self, provider_name: str) -> bool:
         """Switch to a different provider.
@@ -65,6 +68,7 @@ class AIManager:
             self._provider = get_provider(provider_name)
             self._model = None
             self._auth = None
+            self._model_manager = self._provider.get_model_manager()
             return True
         except Exception as e:
             logger.error("Failed to switch provider: %s", e)
