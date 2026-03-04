@@ -1,6 +1,7 @@
 """ModelManager for Copilot (migrated into provider package)."""
 from __future__ import annotations
 
+import json
 import logging
 from typing import List, Optional
 
@@ -22,6 +23,7 @@ class ModelManager:
         self._models_cache: List[dict] = []
         self.current_model: Optional[str] = None
         self.load_selected()
+        self.load_models_cache()
 
     def _get_token(self) -> Optional[str]:
         # Prefer the authenticator's copilot token
@@ -71,6 +73,43 @@ class ModelManager:
             pass
         return os.path.join(cfg_dir, "model")
 
+    def _default_models_cache_path(self) -> str:
+        import os
+
+        cfg_dir = os.path.expanduser(os.getenv("AGENT_CONFIG_DIR", "~/.config/007"))
+        try:
+            os.makedirs(cfg_dir, exist_ok=True)
+        except Exception:
+            pass
+        return os.path.join(cfg_dir, "models_copilot.json")
+
+    def save_models_cache(self, path: str | None = None) -> None:
+        """Persist the available models cache to disk."""
+        try:
+            if path is None:
+                path = self._default_models_cache_path()
+            with open(path, "w") as f:
+                json.dump({"models": self._models_cache}, f)
+        except Exception:
+            logger.debug("Failed to save models cache to %s", path)
+
+    def load_models_cache(self, path: str | None = None) -> None:
+        """Load the models cache from disk if present."""
+        try:
+            import os
+
+            if path is None:
+                path = self._default_models_cache_path()
+            if not os.path.exists(path):
+                return
+            with open(path) as f:
+                payload = json.load(f)
+            models = payload.get("models") if isinstance(payload, dict) else None
+            if isinstance(models, list):
+                self._models_cache = models
+        except Exception:
+            logger.debug("Failed to load models cache from %s", path)
+
     def save_selected(self, path: str | None = None) -> None:
         """Persist the currently selected model to a simple file (optional).
 
@@ -107,18 +146,21 @@ class ModelManager:
 
     def get_models(self, refresh: bool = False) -> List[dict]:
         """Return list of available models. If refresh, re-fetch from the API."""
+        if not refresh and not self._models_cache:
+            self.load_models_cache()
         token = self._get_token()
-        if not token:
-            logger.debug("No copilot token available when getting models")
-            return []
-        if refresh or not self._models_cache:
+        if refresh or (token and not self._models_cache):
             # Ensure token is up-to-date if authenticator provided
             try:
                 if self.auth:
                     self.auth.refresh_token()
             except Exception:
                 logger.debug("Auth refresh failed when getting models")
-            self._models_cache = get_available_models(token)
+            if token:
+                self._models_cache = get_available_models(token)
+                self.save_models_cache()
+        if not self._models_cache and not token:
+            logger.debug("No copilot token available when getting models")
         return self._models_cache
 
     def select_model(self, model_id: str) -> bool:
