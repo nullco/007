@@ -14,8 +14,11 @@ from textual.events import TextSelected
 from textual.screen import Screen
 from textual.widgets import Footer, Header
 
+from textual.command import CommandPalette
+
 from app.config import AppConfig
 from app.tui.commands import CommandHandler
+from app.tui.providers import LoginProvider, ModelProvider
 from app.tui.widgets import MessageOutput, UserInput
 from app.tui.provider_selection import ProviderSelectionScreen
 
@@ -88,13 +91,8 @@ class CodingAgentApp(App):
         yield SystemCommand("Model", "List or select model", self._cmd_model)
 
     def _cmd_login(self) -> None:
-        """Show provider selection screen for login."""
-        def on_provider_selected(provider: str | None):
-            """Handle provider selection."""
-            if provider:
-                asyncio.ensure_future(self._login_with_provider(provider))
-        
-        self.push_screen(ProviderSelectionScreen(self.app_config), on_provider_selected)
+        """Show command palette with login providers."""
+        self.push_screen(CommandPalette(providers=[LoginProvider], placeholder="Select login provider…"))
 
     async def _login_with_provider(self, provider: str) -> None:
         """Login with a selected provider.
@@ -110,6 +108,19 @@ class CodingAgentApp(App):
         task = asyncio.create_task(self._poll_oauth(provider))
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+
+    def _login_with_provider_sync(self, provider: str) -> None:
+        """Callback for LoginProvider command palette hits."""
+        asyncio.ensure_future(self._login_with_provider(provider))
+
+    def _select_model(self, model_id: str, provider: str) -> None:
+        """Callback for ModelProvider command palette hits."""
+        ai = self.app_config.ai_manager
+        if ai.provider_name() != provider:
+            ai.switch_provider(provider)
+        ai.select_model(model_id)
+        self.app_config.rebuild_agent()
+        self.notify(f"Switched to {model_id} ({provider})")
 
     def _cmd_logout(self) -> None:
         """Execute logout command."""
@@ -129,9 +140,8 @@ class CodingAgentApp(App):
         await self.chat_container.remove_children()
 
     def _cmd_model(self) -> None:
-        """Execute model command."""
-        result = asyncio.ensure_future(self.command_handler.handle_model())
-        asyncio.ensure_future(self._handle_command_result(result))
+        """Show command palette with model selection."""
+        self.push_screen(CommandPalette(providers=[ModelProvider], placeholder="Select model…"))
 
     async def _handle_command_result(self, result_future) -> None:
         """Handle command result from async execution."""
