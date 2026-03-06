@@ -42,6 +42,10 @@ class AgentApp(App):
         super().__init__(*args, **kwargs)
         self._agent = None
 
+    def watch_theme(self, theme: str) -> None:
+        state.set("theme", theme)
+
+
     def on_text_selected(self, event: TextSelected) -> None:
         selected = self.screen.get_selected_text()
         if not selected:
@@ -124,6 +128,9 @@ class AgentApp(App):
         self.chat_container = self.query_one("#chat-container", ScrollableContainer)
         model_id = state.get("model")
         provider_name = state.get("provider")
+        theme = state.get("theme")
+        if theme:
+            self.theme = theme
         if model_id and provider_name:
             provider = get_provider(provider_name)
             model = provider.build_model(model_id)
