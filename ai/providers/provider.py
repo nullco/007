@@ -9,10 +9,16 @@ class Provider(Protocol):
     async def authenticate(self, handler):
         ...
 
+    async def reauthenticate(self):
+        ...
+
     def is_authenticated(self) -> bool:
         ...
 
-    def build_model(self, model_name: str) -> Model:
+    def should_reauthenticate(self) -> bool:
+        ...
+
+    async def build_model(self, model_name: str) -> Model:
         ...
 
     def get_models(self) -> list[str]:

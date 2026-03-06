@@ -1,5 +1,4 @@
 import logging
-import asyncio
 import traceback
 from typing import Iterable
 from textual.app import App, ComposeResult, SystemCommand
@@ -36,6 +35,7 @@ class ModelFooter(Footer):
 
 class AgentApp(App):
 
+    CSS_PATH = "app.tcss"
     TITLE = "Agent 007"
 
     def __init__(self, *args, **kwargs):

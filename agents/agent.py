@@ -30,6 +30,9 @@ class Agent:
         self._message_history = None
 
     async def stream(self, user_input: str, stream_handler) -> None:
+        if self._model.provider.should_reauthenticate():
+            await self._model.provider.reauthenticate()
+            self.set_model(self._model.provider.build_model(self._model.name))
         async with self._agent.run_stream(
             user_input, message_history=self._message_history
         ) as result:

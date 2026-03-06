@@ -1,4 +1,5 @@
 import asyncio
+import time
 from ai.providers.provider import Provider
 from openai import AsyncOpenAI
 from pydantic_ai.models.openai import OpenAIChatModel
@@ -25,7 +26,6 @@ Code: {response.user_code}""")
                 state.set("copilot.github_access_token", credentials.github_token)
                 state.set("copilot.access_token", credentials.copilot_token)
                 state.set("copilot.expires_ms", credentials.expires_ms)
-                state.save()
                 await handler("[OAuth] Login successful!")
             except asyncio.CancelledError:
                 await handler("[OAuth] Login cancelled.")
@@ -37,6 +37,21 @@ Code: {response.user_code}""")
         if not access_token:
             return False
         return True
+
+    def should_reauthenticate(self) -> bool:
+        expires_ms = state.get("copilot.expires_ms")
+        if not expires_ms:
+            return True
+        return expires_ms - int(time.time() * 1000) < 5 * 60 * 1000
+
+    async def reauthenticate(self):
+        access_token = state.get("copilot.github_access_token")
+        if not access_token:
+            return
+        credentials = await asyncio.to_thread(exchange_for_copilot_token, access_token)
+        state.set("copilot.github_access_token", credentials.github_token)
+        state.set("copilot.access_token", credentials.copilot_token)
+        state.set("copilot.expires_ms", credentials.expires_ms)
 
     def build_model(self, model_name: str) -> Model:
         access_token = state.get("copilot.access_token")
