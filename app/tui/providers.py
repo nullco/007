@@ -1,121 +1,81 @@
 """Command palette providers for login and model selection."""
 
-from __future__ import annotations
-
 import logging
 from functools import partial
-
 from textual.command import DiscoveryHit, Hit, Hits, Provider
+from app.tui.app import AgentApp
+
 
 logger = logging.getLogger(__name__)
-
 
 class LoginProvider(Provider):
     """Command provider for selecting a login provider."""
 
+    def get_providers(self):
+        return ['copilot']
+
+    def login(self, provider_name: str):
+        # Placeholder for actual login logic
+        logger.info(f"Logging in with {provider_name}")
+        return f"Logged in with {provider_name}"
+
     async def discover(self) -> Hits:
-        from app.tui.app import CodingAgentApp
 
-        app = self.app
-        if not isinstance(app, CodingAgentApp):
-            return
-
-        auth_manager = app.app_config.auth_manager
-        providers = auth_manager.get_available_providers()
-
-        for provider_name in providers:
-            is_logged_in = auth_manager.is_logged_in(provider_name)
-            status = "✓" if is_logged_in else "○"
-            display = f"{status} {provider_name}"
+        for provider_name in self.get_providers():
+            display = f"{provider_name}"
             yield DiscoveryHit(
                 display,
-                partial(app._login_with_provider_sync, provider_name),
+                partial(self.login, provider_name),
                 help=f"Authenticate with {provider_name}",
             )
 
     async def search(self, query: str) -> Hits:
         matcher = self.matcher(query)
-        app = self.app
-
-        from app.tui.app import CodingAgentApp
-
-        if not isinstance(app, CodingAgentApp):
-            return
-
-        auth_manager = app.app_config.auth_manager
-        providers = auth_manager.get_available_providers()
-
-        for provider_name in providers:
-            is_logged_in = auth_manager.is_logged_in(provider_name)
-            status = "✓" if is_logged_in else "○"
-            command = f"{status} {provider_name}"
-            score = matcher.match(command)
+        for provider_name in self.get_providers():
+            score = matcher.match(provider_name)
             if score > 0:
                 yield Hit(
                     score,
-                    matcher.highlight(command),
-                    partial(app._login_with_provider_sync, provider_name),
+                    matcher.highlight(provider_name),
+                    partial(self.login, provider_name),
                     help=f"Authenticate with {provider_name}",
                 )
 
 
 class ModelProvider(Provider):
-    """Command provider for selecting a model."""
+
+    def _get_models(self):
+        return [{'id': 'gpt-4', 'provider': 'copilot'}]
 
     async def startup(self) -> None:
-        from app.tui.app import CodingAgentApp
-
-        app = self.app
-        if not isinstance(app, CodingAgentApp):
-            self._models = []
-            return
-
-        worker = app.run_worker(
-            partial(app.app_config.ai_manager.get_all_models), thread=True
+        worker = self.app.run_worker(
+            partial(self._get_models), thread=True
         )
         self._models = await worker.wait()
 
     async def discover(self) -> Hits:
-        from app.tui.app import CodingAgentApp
-
-        app = self.app
-        if not isinstance(app, CodingAgentApp):
-            return
-
-        current = app.app_config.ai_manager.get_current_model()
-        current_provider = app.app_config.ai_manager.provider_name()
-
+        assert isinstance(self.app, AgentApp)
         for model in self._models:
-            model_id = model.get("id", "unknown")
-            provider = model.get("provider", "unknown")
-            is_current = "→" if (model_id == current and provider == current_provider) else " "
-            display = f"{is_current} {model_id} ({provider})"
+            model_id = model['id']
+            provider = model['provider']
+            display = f"{model_id} ({provider})"
             yield DiscoveryHit(
                 display,
-                partial(app._select_model, model_id, provider)
+                partial(self.app.select_model, model_id, provider)
             )
 
     async def search(self, query: str) -> Hits:
+        assert isinstance(self.app, AgentApp)
         matcher = self.matcher(query)
-        app = self.app
-
-        from app.tui.app import CodingAgentApp
-
-        if not isinstance(app, CodingAgentApp):
-            return
-
-        current = app.app_config.ai_manager.get_current_model()
-        current_provider = app.app_config.ai_manager.provider_name()
 
         for model in self._models:
-            model_id = model.get("id", "unknown")
-            provider = model.get("provider", "unknown")
-            is_current = "→" if (model_id == current and provider == current_provider) else " "
-            command = f"{is_current} {model_id} ({provider})"
-            score = matcher.match(command)
+            model_id = model['id']
+            provider = model['provider']
+            display = f"{model_id} ({provider})"
+            score = matcher.match(display)
             if score > 0:
                 yield Hit(
                     score,
-                    matcher.highlight(command),
-                    partial(app._select_model, model_id, provider)
+                    matcher.highlight(display),
+                    partial(self.app.select_model, model_id, provider)
                 )

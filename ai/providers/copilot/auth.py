@@ -1,214 +1,227 @@
-"""Copilot authenticator (migrated into ai.providers.copilot package)."""
-from __future__ import annotations
-
+import base64
 import logging
-import os
-import stat
-import threading
-from dataclasses import dataclass, field
-
-from . import copilot_oauth
+import re
+import time
+from dataclasses import dataclass
+import requests
 
 logger = logging.getLogger(__name__)
 
+COPILOT_HEADERS = {
+    "User-Agent": "GitHubCopilotChat/0.35.0",
+    "Editor-Version": "vscode/1.107.0",
+    "Editor-Plugin-Version": "copilot-chat/0.35.0",
+    "Copilot-Integration-Id": "vscode-chat",
+}
+
+CLIENT_ID = base64.b64decode("SXYxLmI1MDdhMDhjODdlY2ZlOTg=").decode()
+DEVICE_CODE_URL = "https://github.com/login/device/code"
+ACCESS_TOKEN_URL = "https://github.com/login/oauth/access_token"
+COPILOT_TOKEN_URL = "https://api.github.com/copilot_internal/v2/token"
+DEFAULT_SCOPE = "read:user copilot"
+
+DEFAULT_POLL_TIMEOUT_SECONDS = 600  # 10 minutes
+
 
 @dataclass
-class CopilotAuthenticator:
-    """Handles GitHub Copilot OAuth device flow."""
+class DeviceCodeResponse:
+    device_code: str
+    user_code: str
+    verification_uri: str
+    interval: int
 
-    github_token: str | None = None
-    copilot_token: str | None = None
-    copilot_expires_ms: int | None = field(default=None, repr=False)
-    _device_code: str | None = field(default=None, repr=False)
-    _poll_interval: int = field(default=5, repr=False)
-    _cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
-    _client_id: str = field(
-        default_factory=lambda: os.getenv("GITHUB_OAUTH_CLIENT_ID", copilot_oauth.CLIENT_ID),
-        repr=False,
-    )
-    _scope: str = field(
-        default_factory=lambda: os.getenv("GITHUB_OAUTH_SCOPE", copilot_oauth.DEFAULT_SCOPE),
-        repr=False,
-    )
 
-    def __post_init__(self) -> None:
-        """Hydrate tokens from the environment if available."""
-        if not self.github_token:
-            self.github_token = os.getenv("GITHUB_API_KEY")
-        if not self.copilot_token:
-            self.copilot_token = os.getenv("COPILOT_API_KEY")
-        if self.copilot_expires_ms is None:
-            expires_env = os.getenv("COPILOT_EXPIRES_MS")
-            if expires_env:
-                try:
-                    self.copilot_expires_ms = int(expires_env)
-                except ValueError:
-                    self.copilot_expires_ms = None
+@dataclass
+class CopilotCredentials:
+    github_token: str
+    copilot_token: str | None
+    expires_ms: int | None
 
-        if self.github_token and (not self.copilot_token or self.is_token_expired() or self.copilot_expires_ms is None):
-            try:
-                self._apply_copilot_token(self.github_token)
-            except Exception:
-                logger.debug("Failed to refresh Copilot token on init")
 
-    def cancel(self) -> None:
-        """Signal cancellation to any running poll."""
-        self._cancel_event.set()
+class OAuthError(Exception):
+    """OAuth-related error."""
 
-    def start_login(self) -> tuple[bool, str]:
-        """Start the OAuth device flow. Returns (success, message)."""
-        try:
-            resp = copilot_oauth.start_device_flow(self._client_id, self._scope)
-        except copilot_oauth.OAuthError as e:
-            return False, f"[OAuth] Error: {e}"
 
-        self._device_code = resp.device_code
-        self._poll_interval = resp.interval
+def start_device_flow(
+    client_id: str = CLIENT_ID,
+    scope: str = DEFAULT_SCOPE,
+) -> DeviceCodeResponse:
+    """Start the GitHub device OAuth flow."""
+    headers = {"Accept": "application/json", **COPILOT_HEADERS}
+    data = {"client_id": client_id, "scope": scope}
 
-        return True, (
-            f"[OAuth] Visit: {resp.verification_uri}\n"
-            f"Code: {resp.user_code}\n"
-            "Waiting for authorization..."
+    try:
+        resp = requests.post(DEVICE_CODE_URL, data=data, headers=headers, timeout=10)
+    except requests.RequestException as e:
+        raise OAuthError(f"Device code request failed: {e}") from e
+
+    if resp.status_code == 404:
+        raise OAuthError(
+            "Device code endpoint returned 404. "
+            "The client_id may be invalid for GitHub's device flow."
         )
 
-    def poll_for_token(self) -> tuple[bool, str]:
-        """Poll for token completion. Blocks until done. Returns (success, message)."""
-        if not self._device_code:
-            return False, "[OAuth] Login not started."
+    if resp.status_code != 200:
+        raise OAuthError(f"Device code request failed: {resp.status_code} {resp.text}")
 
-        self._cancel_event.clear()
-        try:
-            access_token = copilot_oauth.poll_for_token(
-                self._device_code,
-                self._client_id,
-                self._poll_interval,
-                self._cancel_event,
-            )
-        except copilot_oauth.OAuthError as e:
-            if str(e) == "cancelled":
-                return False, "[OAuth] Cancelled."
-            return False, f"[OAuth] Error: {e}"
+    try:
+        rj = resp.json()
+    except Exception as e:
+        raise OAuthError(f"Failed to parse device code response: {e}") from e
 
-        self.github_token = access_token
-        os.environ["GITHUB_API_KEY"] = access_token
+    if "device_code" not in rj or "user_code" not in rj:
+        raise OAuthError(f"Invalid device code response: {rj}")
 
-        self._apply_copilot_token(access_token)
+    return DeviceCodeResponse(
+        device_code=rj["device_code"],
+        user_code=rj["user_code"],
+        verification_uri=rj.get("verification_uri_complete")
+        or rj.get("verification_uri", "https://github.com/login/device"),
+        interval=int(rj.get("interval", 5)),
+    )
 
-        if os.getenv("AGENT_PERSIST_TOKENS", "true").lower() not in ("0", "false", "no"):
-            self._save_tokens()
 
-        username = copilot_oauth.get_github_username(access_token)
-        if username:
-            return True, f"[OAuth] Logged in as: {username}"
-        return True, "[OAuth] Login successful!"
+def poll_for_token(
+    device_code: str,
+    interval: int = 5,
+    timeout_seconds: int = DEFAULT_POLL_TIMEOUT_SECONDS,
+) -> str:
+    """Poll GitHub for access token after user authorizes.
 
-    def _apply_copilot_token(self, github_token: str) -> None:
-        """Exchange GitHub token for Copilot token and store it."""
-        creds = copilot_oauth.exchange_for_copilot_token(github_token)
-        if creds.copilot_token:
-            self.copilot_token = creds.copilot_token
-            self.copilot_expires_ms = creds.expires_ms
-            os.environ["COPILOT_API_KEY"] = creds.copilot_token
-            if creds.expires_ms is not None:
-                os.environ["COPILOT_EXPIRES_MS"] = str(creds.expires_ms)
-            copilot_oauth.enable_all_models(creds.copilot_token)
+    If cancel_event is provided and set, raises OAuthError("cancelled").
+    If timeout_seconds is exceeded, raises OAuthError("Timed out waiting for authorization").
+    """
 
-    def is_token_expired(self) -> bool:
-        """Check if the Copilot token has expired."""
-        if not self.copilot_expires_ms:
-            return False
-        import time
+    headers = {"Accept": "application/json"}
+    data = {
+        "client_id": CLIENT_ID,
+        "device_code": device_code,
+        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+    }
 
-        return int(time.time() * 1000) >= self.copilot_expires_ms
+    poll_interval = interval
+    start_time = time.time()
 
-    def refresh_token(self) -> bool:
-        """Refresh the Copilot token if expired or missing. Returns True if refreshed."""
-        if not self.github_token:
-            return False
-        if self.copilot_token and self.copilot_expires_ms is not None and not self.is_token_expired():
-            return False
-        self._apply_copilot_token(self.github_token)
-        return self.copilot_token is not None
+    while True:
+        if time.time() - start_time > timeout_seconds:
+            raise OAuthError("Timed out waiting for authorization")
 
-    def logout(self) -> str:
-        """Clear tokens and environment variables."""
-        self.github_token = None
-        self.copilot_token = None
-        self._device_code = None
-
-        if "GITHUB_API_KEY" in os.environ:
-            del os.environ["GITHUB_API_KEY"]
-        if "COPILOT_API_KEY" in os.environ:
-            del os.environ["COPILOT_API_KEY"]
-        if "COPILOT_EXPIRES_MS" in os.environ:
-            del os.environ["COPILOT_EXPIRES_MS"]
-
-        if os.getenv("AGENT_PERSIST_TOKENS", "true").lower() not in ("0", "false", "no"):
-            self._remove_tokens_from_env_file()
-
-        return "[OAuth] Logged out."
-
-    def is_logged_in(self) -> bool:
-        """Check if user is logged in."""
-        return self.github_token is not None
-
-    def get_status(self) -> str:
-        """Get current login status."""
-        if not self.github_token:
-            return "Not logged in"
-        username = copilot_oauth.get_github_username(self.github_token)
-        if username:
-            return f"Logged in as: {username}"
-        return "Logged in"
-
-    def _save_tokens(self) -> None:
-        """Save tokens to .env file with restricted permissions."""
-        env_path = os.path.join(os.getcwd(), ".env")
-        existing: dict[str, str] = {}
-
-        if os.path.exists(env_path):
-            try:
-                with open(env_path) as f:
-                    for line in f:
-                        if "=" in line:
-                            k, v = line.rstrip("\n").split("=", 1)
-                            existing[k] = v
-            except Exception as e:
-                logger.warning("Failed to read existing .env file: %s", e)
-
-        if self.github_token:
-            existing["GITHUB_API_KEY"] = self.github_token
-        if self.copilot_token:
-            existing["COPILOT_API_KEY"] = self.copilot_token
-        if self.copilot_expires_ms is not None:
-            existing["COPILOT_EXPIRES_MS"] = str(self.copilot_expires_ms)
+        for _ in range(poll_interval * 10):
+            time.sleep(0.1)
 
         try:
-            with open(env_path, "w") as f:
-                for k, v in existing.items():
-                    f.write(f"{k}={v}\n")
-            try:
-                os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)  # 0o600
-            except OSError as e:
-                logger.warning("Failed to set .env file permissions: %s", e)
+            resp = requests.post(ACCESS_TOKEN_URL, data=data, headers=headers, timeout=10)
+        except requests.RequestException as e:
+            raise OAuthError(f"Token request failed: {e}") from e
+
+        try:
+            jr = resp.json()
         except Exception as e:
-            logger.warning("Failed to save tokens to .env: %s", e)
+            raise OAuthError(f"Failed to parse token response: {e}") from e
 
-    def _remove_tokens_from_env_file(self) -> None:
-        """Remove tokens from .env file."""
-        env_path = os.path.join(os.getcwd(), ".env")
-        if not os.path.exists(env_path):
-            return
+        if "error" in jr:
+            err = jr["error"]
+            if err == "authorization_pending":
+                continue
+            if err == "slow_down":
+                poll_interval += 2
+                continue
+            raise OAuthError(jr.get("error_description", err))
 
-        try:
-            lines = []
-            with open(env_path) as f:
-                for line in f:
-                    if line.startswith("GITHUB_API_KEY=") or line.startswith("COPILOT_API_KEY=") or line.startswith("COPILOT_EXPIRES_MS="):
-                        continue
-                    lines.append(line)
+        access_token = jr.get("access_token")
+        if not access_token:
+            raise OAuthError(f"No access token in response: {jr}")
 
-            with open(env_path, "w") as f:
-                f.writelines(lines)
-        except Exception as e:
-            logger.warning("Failed to remove tokens from .env: %s", e)
+        return access_token
+
+
+def exchange_for_copilot_token(github_token: str) -> CopilotCredentials:
+    """Exchange a GitHub access token for a Copilot token."""
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {github_token}",
+        **COPILOT_HEADERS,
+    }
+
+    try:
+        resp = requests.get(COPILOT_TOKEN_URL, headers=headers, timeout=10)
+    except requests.RequestException as e:
+        logger.warning("Failed to exchange for Copilot token: %s", e)
+        return CopilotCredentials(
+            github_token=github_token, copilot_token=None, expires_ms=None
+        )
+
+    if resp.status_code != 200:
+        logger.debug("Copilot token exchange returned %d", resp.status_code)
+        return CopilotCredentials(
+            github_token=github_token, copilot_token=None, expires_ms=None
+        )
+
+    try:
+        data = resp.json()
+    except Exception as e:
+        logger.warning("Failed to parse Copilot token response: %s", e)
+        return CopilotCredentials(
+            github_token=github_token, copilot_token=None, expires_ms=None
+        )
+
+    token = data.get("token")
+    expires_at = data.get("expires_at")
+
+    if not isinstance(token, str):
+        return CopilotCredentials(
+            github_token=github_token, copilot_token=None, expires_ms=None
+        )
+
+    expires_ms = None
+    if isinstance(expires_at, (int, float)):
+        expires_ms = int(expires_at * 1000) - 5 * 60 * 1000
+
+    return CopilotCredentials(
+        github_token=github_token, copilot_token=token, expires_ms=expires_ms
+    )
+
+
+def get_copilot_base_url(token: str | None = None) -> str:
+    """Get the Copilot API base URL from token or default."""
+    if token:
+        m = re.search(r"proxy-ep=([^;]+)", token)
+        if m:
+            proxy_host = m.group(1)
+            api_host = re.sub(r"^proxy\.", "api.", proxy_host)
+            return f"https://{api_host}"
+    return "https://api.individual.githubcopilot.com"
+
+
+def enable_model(token: str, model_id: str) -> bool:
+    """Enable a model that requires policy acceptance."""
+    base_url = get_copilot_base_url(token)
+    url = f"{base_url}/models/{model_id}/policy"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {token}",
+        "openai-intent": "chat-policy",
+        "x-interaction-type": "chat-policy",
+        **COPILOT_HEADERS,
+    }
+    try:
+        r = requests.post(url, json={"state": "enabled"}, headers=headers, timeout=10)
+        return r.ok
+    except requests.RequestException as e:
+        logger.debug("Failed to enable model %s: %s", model_id, e)
+        return False
+
+
+def get_github_username(token: str) -> str | None:
+    """Get the GitHub username for a token."""
+    try:
+        resp = requests.get(
+            "https://api.github.com/user",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return resp.json().get("login")
+    except requests.RequestException as e:
+        logger.debug("Failed to get GitHub username: %s", e)
+    return None

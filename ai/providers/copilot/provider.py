@@ -1,0 +1,61 @@
+import asyncio
+from ai.providers.provider import Provider
+from openai import AsyncOpenAI
+from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.providers.openai import OpenAIProvider
+from state import state
+from ai.providers.model import Model
+from .auth import COPILOT_HEADERS, get_copilot_base_url, \
+    start_device_flow, poll_for_token, exchange_for_copilot_token
+
+
+class CopilotProvider(Provider):
+
+    name = "copilot"
+
+    async def authenticate(self, handler):
+        response = await asyncio.to_thread(start_device_flow)
+        await handler(f"""[OAuth] Please visit {response.verification_uri}
+Code: {response.user_code}""")
+
+        async def poll():
+            try:
+                access_token = await asyncio.to_thread(poll_for_token, response.device_code)
+                credentials = await asyncio.to_thread(exchange_for_copilot_token, access_token)
+                state.set("copilot.github_access_token", credentials.github_token)
+                state.set("copilot.access_token", credentials.copilot_token)
+                state.set("copilot.expires_ms", credentials.expires_ms)
+                state.save()
+                await handler("[OAuth] Login successful!")
+            except asyncio.CancelledError:
+                await handler("[OAuth] Login cancelled.")
+
+        asyncio.create_task(poll())
+
+    def is_authenticated(self) -> bool:
+        access_token = state.get("copilot.access_token")
+        if not access_token:
+            return False
+        return True
+
+    def build_model(self, model_name: str) -> Model:
+        access_token = state.get("copilot.access_token")
+        if not access_token:
+            raise ValueError("You need to authenticate first")
+
+        base_url = get_copilot_base_url(access_token)
+
+        openai_client = AsyncOpenAI(
+            base_url=base_url,
+            api_key=access_token,
+            default_headers=COPILOT_HEADERS,
+        )
+        provider = OpenAIProvider(openai_client=openai_client)
+        model = OpenAIChatModel(model_name, provider=provider)
+        return Model(model_name, model, self)
+
+    def get_models(self) -> list[str]:
+        return [
+            "gpt-5-mini",
+            "gpt-4.1",
+        ]
