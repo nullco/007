@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import sys
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion, WordCompleter
@@ -97,6 +98,8 @@ async def _pick(options: list[str]) -> str | None:
             pre_run=picker.default_buffer.start_completion,
         )
     except (EOFError, KeyboardInterrupt):
+        sys.stdout.write("\033[A\033[K")
+        sys.stdout.flush()
         return None
 
 
@@ -190,13 +193,19 @@ async def main() -> None:
                 bottom_toolbar=lambda: _build_toolbar(agent),
             )
         except (EOFError, KeyboardInterrupt):
+            sys.stdout.write("\033[A\033[K")
+            sys.stdout.flush()
             break
 
         user_text = user_text.strip()
         if not user_text:
+            sys.stdout.write("\033[A\033[K")
+            sys.stdout.flush()
             continue
 
         if user_text.startswith("/"):
+            sys.stdout.write("\033[A\033[K")
+            sys.stdout.flush()
             cmd = user_text.lower()
             # Auto-complete partial commands to first match
             if cmd not in COMMANDS and cmd not in _QUIT_ALIASES:
