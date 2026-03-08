@@ -27,40 +27,6 @@ _CODE_BLOCK_RE = re.compile(r"```(\w*)\n(.*?)```", re.DOTALL)
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 _INLINE_CODE_RE = re.compile(r"`([^`]+)`")
 
-
-def _format_markdown(text: str) -> str:
-    """Return markdown with syntax-highlighted code blocks and minimal formatting."""
-    parts: list[str] = []
-    last = 0
-    for m in _CODE_BLOCK_RE.finditer(text):
-        before = text[last:m.start()]
-        if before.strip():
-            parts.append(_format_plain(before))
-        lang, code = m.group(1), m.group(2)
-        parts.append(_format_code(code, lang))
-        last = m.end()
-    tail = text[last:]
-    if tail.strip():
-        parts.append(_format_plain(tail))
-    return "\n\n".join(parts)
-
-
-def _format_plain(text: str) -> str:
-    """Return text with bold and inline code converted to ANSI."""
-    text = text.strip("\n")
-    text = _BOLD_RE.sub(r"\033[1m\1\033[0m", text)
-    text = _INLINE_CODE_RE.sub(r"\033[36m\1\033[0m", text)
-    return text
-
-
-def _format_code(code: str, lang: str) -> str:
-    """Return a code block with Pygments syntax highlighting."""
-    try:
-        lexer = get_lexer_by_name(lang) if lang else guess_lexer(code)
-    except Exception:
-        lexer = get_lexer_by_name("text")
-    return highlight(code, lexer, TerminalTrueColorFormatter(style="monokai")).rstrip("\n")
-
 COMMANDS = {
     "/login": "Authenticate with a provider",
     "/model": "Select a model",
@@ -85,22 +51,56 @@ _style = Style.from_dict({
 })
 
 
+# -- Formatting ---------------------------------------------------------------
+
+
+def _format_markdown(text: str) -> str:
+    parts: list[str] = []
+    last = 0
+    for m in _CODE_BLOCK_RE.finditer(text):
+        before = text[last:m.start()]
+        if before.strip():
+            parts.append(_format_plain(before))
+        parts.append(_format_code(m.group(2), m.group(1)))
+        last = m.end()
+    tail = text[last:]
+    if tail.strip():
+        parts.append(_format_plain(tail))
+    return "\n\n".join(parts)
+
+
+def _format_plain(text: str) -> str:
+    text = text.strip("\n")
+    text = _BOLD_RE.sub(r"\033[1m\1\033[0m", text)
+    return _INLINE_CODE_RE.sub(r"\033[36m\1\033[0m", text)
+
+
+def _format_code(code: str, lang: str) -> str:
+    try:
+        lexer = get_lexer_by_name(lang) if lang else guess_lexer(code)
+    except Exception:
+        lexer = get_lexer_by_name("text")
+    return highlight(code, lexer, TerminalTrueColorFormatter(style="monokai")).rstrip("\n")
+
+
+# -- Helpers ------------------------------------------------------------------
+
+
+def _clear_line() -> None:
+    sys.stdout.write("\033[A\033[K")
+    sys.stdout.flush()
+
+
 def _build_toolbar(agent: Agent | None) -> HTML:
-    if agent:
-        status = f"{agent.model_name} ({agent.provider_name})"
-    else:
-        status = "no model selected"
+    status = f"{agent.model_name} ({agent.provider_name})" if agent else "no model selected"
     return HTML(f"<b>{status}</b>  ·  /help for commands")
 
 
-# -- Commands -----------------------------------------------------------------
-
-
 async def _pick(options: list[str]) -> str | None:
-    """Prompt the user to pick from a list with fuzzy autocomplete."""
     if not options:
         print("\033[31mNo options available.\033[0m")
         return None
+
     def _fuzzy_match(text: str, target: str) -> bool:
         it = iter(target.lower())
         return all(ch in it for ch in text.lower())
@@ -112,45 +112,47 @@ async def _pick(options: list[str]) -> str | None:
                 if _fuzzy_match(text, opt):
                     yield Completion(opt, start_position=-len(text))
 
-    completer = _ListCompleter()
-    validator = Validator.from_callable(
-        lambda t: t in options,
-        error_message="Not a valid option. Use Tab to see choices.",
-    )
+    kb = KeyBindings()
+
+    @kb.add(Keys.Escape, eager=True)
+    def _(event):
+        event.app.exit(exception=EOFError)
+
+    picker = PromptSession(completer=_ListCompleter(), key_bindings=kb, style=_style)
+    picker.app.ttimeoutlen = 0.0
+    picker.default_buffer.on_text_changed += lambda buf: buf.start_completion()
     try:
-        kb = KeyBindings()
-
-        @kb.add(Keys.Escape, eager=True)
-        def _(event):
-            event.app.exit(exception=EOFError)
-
-        picker = PromptSession(completer=completer, key_bindings=kb, style=_style)
-        picker.app.ttimeoutlen = 0.0
-        picker.default_buffer.on_text_changed += lambda buf: buf.start_completion()
         return await picker.prompt_async(
             "> ",
-            validator=validator,
+            validator=Validator.from_callable(
+                lambda t: t in options,
+                error_message="Not a valid option. Use Tab to see choices.",
+            ),
             validate_while_typing=False,
             complete_while_typing=True,
             pre_run=picker.default_buffer.start_completion,
         )
     except (EOFError, KeyboardInterrupt):
-        sys.stdout.write("\033[A\033[K")
-        sys.stdout.flush()
+        _clear_line()
         return None
 
 
+def _resolve_command(cmd: str) -> str:
+    if cmd in COMMANDS or cmd in _QUIT_ALIASES:
+        return cmd
+    all_cmds = set(COMMANDS) | set(_QUIT_ALIASES)
+    matches = [c for c in all_cmds if c.startswith(cmd)]
+    return matches[0] if len(matches) == 1 else cmd
+
+
+# -- Commands -----------------------------------------------------------------
+
+
 async def _cmd_login(agent: Agent | None) -> Agent | None:
-    providers = get_providers()
-    name = await _pick(providers)
+    name = await _pick(get_providers())
     if not name:
         return agent
-    provider = get_provider(name)
-
-    async def handler(result):
-        print(result)
-
-    await provider.authenticate(handler)
+    await get_provider(name).authenticate(lambda result: print(result))
     print(f"\033[32mAuthenticated with {name}.\033[0m")
     return agent
 
@@ -162,8 +164,7 @@ async def _cmd_model(agent: Agent | None) -> Agent | None:
         if not provider.is_authenticated():
             continue
         for model_id in provider.get_models():
-            label = f"{model_id} ({pname})"
-            options[label] = (model_id, pname)
+            options[f"{model_id} ({pname})"] = (model_id, pname)
 
     if not options:
         print("\033[31mNo models available. Login first.\033[0m")
@@ -174,12 +175,11 @@ async def _cmd_model(agent: Agent | None) -> Agent | None:
         return agent
     model_id, provider_name = options[pick]
 
-    provider = get_provider(provider_name)
-    model = await provider.build_model(model_id)
-    if not agent:
-        agent = Agent(model)
-    else:
+    model = await get_provider(provider_name).build_model(model_id)
+    if agent:
         agent.set_model(model)
+    else:
+        agent = Agent(model)
     state.set("provider", provider_name)
     state.set("model", model_id)
     print(f"\033[32mSwitched to {model_id} ({provider_name}).\033[0m")
@@ -188,12 +188,10 @@ async def _cmd_model(agent: Agent | None) -> Agent | None:
 
 async def _stream_response(agent: Agent, user_text: str) -> None:
     try:
-        # Save cursor position before first render
         sys.stdout.write("\033[s")
         sys.stdout.flush()
 
         def stream_handler(update: str) -> None:
-            # Restore cursor to saved position and clear everything below
             sys.stdout.write("\033[u\033[J")
             sys.stdout.write(_format_markdown(update))
             sys.stdout.flush()
@@ -214,13 +212,11 @@ async def main() -> None:
 
     agent: Agent | None = None
 
-    # Restore saved model
     model_id = state.get("model")
     provider_name = state.get("provider")
     if model_id and provider_name:
         try:
-            provider = get_provider(provider_name)
-            model = await provider.build_model(model_id)
+            model = await get_provider(provider_name).build_model(model_id)
             agent = Agent(model)
             print(f"Model: \033[32m{model_id}\033[0m ({provider_name})")
         except Exception:
@@ -237,26 +233,17 @@ async def main() -> None:
                 bottom_toolbar=lambda: _build_toolbar(agent),
             )
         except (EOFError, KeyboardInterrupt):
-            sys.stdout.write("\033[A\033[K")
-            sys.stdout.flush()
+            _clear_line()
             break
 
         user_text = user_text.strip()
         if not user_text:
-            sys.stdout.write("\033[A\033[K")
-            sys.stdout.flush()
+            _clear_line()
             continue
 
         if user_text.startswith("/"):
-            sys.stdout.write("\033[A\033[K")
-            sys.stdout.flush()
-            cmd = user_text.lower()
-            # Auto-complete partial commands to first match
-            if cmd not in COMMANDS and cmd not in _QUIT_ALIASES:
-                all_cmds = set(COMMANDS) | set(_QUIT_ALIASES)
-                matches = [c for c in all_cmds if c.startswith(cmd)]
-                if len(matches) == 1:
-                    cmd = matches[0]
+            _clear_line()
+            cmd = _resolve_command(user_text.lower())
             if cmd in _QUIT_ALIASES:
                 break
             elif cmd == "/clear":
