@@ -11,6 +11,7 @@ dependencies = [
     "requests",
     "python-dotenv",
     "textual-autocomplete>=4.0.6",
+    "prompt-toolkit>=3.0",
 ]
 
 [project.optional-dependencies]
