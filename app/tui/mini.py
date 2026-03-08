@@ -4,8 +4,11 @@ import asyncio
 import logging
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import FuzzyWordCompleter, WordCompleter
+from prompt_toolkit.completion import Completer, Completion, WordCompleter
+from prompt_toolkit.document import Document
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import Keys
 from prompt_toolkit.validation import Validator
 from rich.console import Console
 from rich.live import Live
@@ -43,21 +46,43 @@ def _build_toolbar(agent: Agent | None) -> HTML:
 # -- Commands -----------------------------------------------------------------
 
 
-async def _pick(title: str, options: list[str]) -> str | None:
+async def _pick(options: list[str]) -> str | None:
     """Prompt the user to pick from a list with fuzzy autocomplete."""
     if not options:
         console.print("[red]No options available.[/red]")
         return None
-    completer = FuzzyWordCompleter(options)
+    def _fuzzy_match(text: str, target: str) -> bool:
+        it = iter(target.lower())
+        return all(ch in it for ch in text.lower())
+
+    class _ListCompleter(Completer):
+        def get_completions(self, document: Document, complete_event):
+            text = document.text_before_cursor
+            for opt in options:
+                if _fuzzy_match(text, opt):
+                    yield Completion(opt, start_position=-len(text))
+
+    completer = _ListCompleter()
     validator = Validator.from_callable(
         lambda t: t in options,
         error_message="Not a valid option. Use Tab to see choices.",
     )
     try:
-        return await PromptSession(completer=completer).prompt_async(
-            f"{title}: ",
+        kb = KeyBindings()
+
+        @kb.add(Keys.Escape, eager=True)
+        def _(event):
+            event.app.exit(exception=EOFError)
+
+        picker = PromptSession(completer=completer, key_bindings=kb)
+        picker.app.ttimeoutlen = 0.0
+        picker.default_buffer.on_text_changed += lambda buf: buf.start_completion()
+        return await picker.prompt_async(
+            "> ",
             validator=validator,
             validate_while_typing=False,
+            complete_while_typing=True,
+            pre_run=picker.default_buffer.start_completion,
         )
     except (EOFError, KeyboardInterrupt):
         return None
@@ -65,7 +90,7 @@ async def _pick(title: str, options: list[str]) -> str | None:
 
 async def _cmd_login(agent: Agent | None) -> Agent | None:
     providers = get_providers()
-    name = await _pick("Provider", providers)
+    name = await _pick(providers)
     if not name:
         return agent
     provider = get_provider(name)
@@ -92,7 +117,7 @@ async def _cmd_model(agent: Agent | None) -> Agent | None:
         console.print("[red]No models available. Login first.[/red]")
         return agent
 
-    pick = await _pick("Model", list(options))
+    pick = await _pick(list(options))
     if pick is None:
         return agent
     model_id, provider_name = options[pick]
@@ -163,7 +188,8 @@ async def main() -> None:
             cmd = user_text.lower()
             # Auto-complete partial commands to first match
             if cmd not in COMMANDS and cmd not in _QUIT_ALIASES:
-                matches = [c for c in list(COMMANDS) + list(_QUIT_ALIASES) if c.startswith(cmd)]
+                all_cmds = set(COMMANDS) | set(_QUIT_ALIASES)
+                matches = [c for c in all_cmds if c.startswith(cmd)]
                 if len(matches) == 1:
                     cmd = matches[0]
             if cmd in _QUIT_ALIASES:
