@@ -148,13 +148,18 @@ async def _cmd_model(agent: Agent | None) -> Agent | None:
 
 async def _stream_response(agent: Agent, user_text: str) -> None:
     try:
-        sys.stdout.write("\033[s")
-        sys.stdout.flush()
+        rendered = ""
 
         def stream_handler(update: str) -> None:
-            sys.stdout.write("\033[u\033[J")
-            sys.stdout.write(update)
-            sys.stdout.flush()
+            nonlocal rendered
+            if update.startswith(rendered):
+                chunk = update[len(rendered) :]
+            else:
+                chunk = update
+            rendered = update
+            if chunk:
+                sys.stdout.write(chunk)
+                sys.stdout.flush()
 
         await agent.stream(user_text, stream_handler)
         sys.stdout.write("\n")
